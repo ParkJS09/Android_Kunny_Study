@@ -12,12 +12,16 @@ import com.Android_kotlin_study.simplegithub.R
 import com.Android_kotlin_study.simplegithub.api.GithubApi
 import com.Android_kotlin_study.simplegithub.api.model.GithubRepo
 import com.Android_kotlin_study.simplegithub.api.provideGithubApi
+import com.Android_kotlin_study.simplegithub.data.RoomDB.provideSearchHistoryDao
 import com.Android_kotlin_study.simplegithub.extensions.plusAssign
+import com.Android_kotlin_study.simplegithub.extensions.runOnIoScheduler
 import com.Android_kotlin_study.simplegithub.rx.AutoClearedDisposable
 import com.Android_kotlin_study.simplegithub.ui.repo.RepositoryActivity
 import com.jakewharton.rxbinding2.support.v7.widget.queryTextChangeEvents
+import io.reactivex.Completable
 import io.reactivex.Observable
 import io.reactivex.android.schedulers.AndroidSchedulers
+import io.reactivex.schedulers.Schedulers
 import kotlinx.android.synthetic.main.activity_search.*
 import org.jetbrains.anko.startActivity
 import java.lang.IllegalStateException
@@ -25,22 +29,15 @@ import java.lang.IllegalStateException
 class SearchActivity : AppCompatActivity(), SearchAdapter.ItemClickListener {
 
     internal lateinit var menuSearch: MenuItem
-
     internal lateinit var searchView: SearchView
-
     internal val adapter by lazy {
         SearchAdapter().apply { setItemClickListener(this@SearchActivity) }
     }
     internal val api: GithubApi by lazy { provideGithubApi(this) }
-//    //여러 디스포저블 객체를 관리할 수 있는 CompositeDisposable 객체를 초기화.
-//    internal val disposable = CompositeDisposable()
-//    //액티비티가 종료되기 전까지 뷰에서 발생하는 이벤트를 처리하기 위해 viewDisposables프로퍼티 추가.
-//    internal val viewDisposables = CompositeDisposable()
-    //CompositeDisposable에서 AutoClearedDisposable로 변경
     internal val disposables = AutoClearedDisposable(this)
-    //onStop() 콜백 함수가 호출되더라도 액티비티가 종료되는 시점에만 관리하고 있는 디스포저블을 해제하도록 구현되어 있으므로
-    //alwaysClearOnStop 프로퍼티를 false로 설정한 생성자를 사용하여 AutoClearedDisposable 객체를 생성하도록 변경
     internal val viewDisposables = AutoClearedDisposable(this, false)
+    //저장을 하기 위한 Dao의 인스턴스를 받음.
+    internal val searchHistoryDao by lazy { provideSearchHistoryDao(this)}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -118,6 +115,8 @@ class SearchActivity : AppCompatActivity(), SearchAdapter.ItemClickListener {
     //}
 
     override fun onItemClick(repository: GithubRepo) {
+//        disposables += Completable.fromCallable{searchHistoryDao.add(repository)}.subscribeOn(Schedulers.io()).subscribe()
+        disposables += runOnIoScheduler { searchHistoryDao.add(repository) }
         startActivity<RepositoryActivity>(
                 RepositoryActivity.KEY_USER_LOGIN to repository.owner.login,
                 RepositoryActivity.KEY_REPO_NAME to repository.name)
