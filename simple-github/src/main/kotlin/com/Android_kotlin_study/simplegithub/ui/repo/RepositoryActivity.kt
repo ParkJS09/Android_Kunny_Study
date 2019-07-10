@@ -1,5 +1,6 @@
 package com.Android_kotlin_study.simplegithub.ui.repo
 
+import android.arch.lifecycle.ViewModelProviders
 import android.os.Bundle
 import android.support.v7.app.AppCompatActivity
 import android.view.View
@@ -33,108 +34,89 @@ class RepositoryActivity : AppCompatActivity() {
     internal val dateFormatToShow = SimpleDateFormat(
             "yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
+    //액티비티가 완전히 종료되기 전까지 이벤트를 계속 받기 위해 추가
+    internal val viewDisposables = AutoClearedDisposable(this, false)
+
+    //RepositoryViewModel을 생성하기 위해 필요한 뷰모델 팩토리 클래스의 인스턴스를 생성
+    internal val viewModelFactory by lazy {
+        RepositoryViewModelFactory(provideGithubApi(this))
+    }
+
+    //뷰모델의 인스턴스는 onCreate()에서 생성 되므로 lateinit으로 선언
+    private lateinit var viewModel: RepositoryViewModel
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_repository)
+
+        viewModel = ViewModelProviders.of(this, viewModelFactory)[RepositoryViewModel::class.java]
+        lifecycle += disposable
+        //viewDisposables에서 이 액티비티의 생명주기 이벤트를 받도록 함.
+        lifecycle += viewDisposables
+        //저장소 정보 이벤트를 구독
+        viewDisposables += viewModel.repository
+                //유효한 저장소 이벤트만 받도록 처리
+                .filter { !it.isEmpty }
+                .map { it.value }
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { repository ->
+                    GlideApp.with(this@RepositoryActivity)
+                            .load(repository.owner.avatarUrl)
+                            .into(ivActivityRepositoryProfile)
+
+                    tvActivityRepositoryName.text = repository.fullName
+                    tvActivityRepositoryStars.text = resources.getQuantityString(R.plurals.star, repository.stars, repository.stars)
+
+                    if (null == repository.description) {
+                        tvActivityRepositoryDescription.setText(R.string.no_description_provided)
+                    } else {
+                        tvActivityRepositoryDescription.text = repository.description
+                    }
+
+                    if (null == repository.language) {
+                        tvActivityRepositoryLanguage.setText(R.string.no_language_specified)
+                    } else {
+                        tvActivityRepositoryLanguage.text = repository.language
+                    }
+
+                    try {
+                        val lastUpdate = dateFormatInResponse.parse(repository.updatedAt)
+                        tvActivityRepositoryLastUpdate.text = dateFormatToShow.format(lastUpdate)
+                    } catch (e: ParseException) {
+                        tvActivityRepositoryLastUpdate.text = getString(R.string.unknown)
+                    }
+                }
+
+        //메시지 이벤트를 구독
+        viewDisposables += viewModel.message
+                .observeOn(AndroidSchedulers.mainThread())
+                //메시지를 이벤트를 받으면 화면에 해당 이벤트를 구독
+                .subscribe { message -> showError(message) }
+        //저장소 정보를 보여주는 뷰의 표시 유무를 결정하는 이벤트를 구독
+        viewDisposables += viewModel.isContentVisible
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { visible ->
+                    setContentVisibility(visible)
+                }
+
+        //작업 진행 여부 이벤트를 구독
+        viewDisposables += viewModel.isLoading
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { isLoading ->
+                    if (isLoading) {
+                        showProgress()
+                    } else {
+                        hideProgress()
+                    }
+                }
 
         val login = intent.getStringExtra(KEY_USER_LOGIN) ?: throw IllegalArgumentException(
                 "No login info exists in extras")
         val repo = intent.getStringExtra(KEY_REPO_NAME) ?: throw IllegalArgumentException(
                 "No repo info exists in extras")
 
-        lifecycle += disposable
-        showRepositoryInfo(login, repo)
-    }
 
-//    override fun onStop() {
-//        super.onStop()
-//        //repoCall?.run { cancel() }
-//        disposable.clear()
-//    }
-
-    private fun showRepositoryInfo(login: String, repoName: String) {
-        showProgress()
-
-//        repoCall = api.getRepository(login, repoName)
-//        repoCall!!.enqueue(object : Callback<GithubRepo> {
-//            override fun onResponse(call: Call<GithubRepo>, response: Response<GithubRepo>) {
-//                hideProgress(true)
-//
-//                val repo = response.body()
-//                if (response.isSuccessful && null != repo) {
-//                    GlideApp.with(this@RepositoryActivity)
-//                            .load(repo.owner.avatarUrl)
-//                            .into(ivActivityRepositoryProfile)
-//
-//                    tvActivityRepositoryName.text = repo.fullName
-//                    tvActivityRepositoryStars.text = resources
-//                            .getQuantityString(R.plurals.star, repo.stars, repo.stars)
-//                    if (null == repo.description) {
-//                        tvActivityRepositoryDescription.setText(R.string.no_description_provided)
-//                    } else {
-//                        tvActivityRepositoryDescription.text = repo.description
-//                    }
-//                    if (null == repo.language) {
-//                        tvActivityRepositoryLanguage.setText(R.string.no_language_specified)
-//                    } else {
-//                        tvActivityRepositoryLanguage.text = repo.language
-//                    }
-//
-//                    try {
-//                        val lastUpdate = dateFormatInResponse.parse(repo.updatedAt)
-//                        tvActivityRepositoryLastUpdate.text = dateFormatToShow.format(lastUpdate)
-//                    } catch (e: ParseException) {
-//                        tvActivityRepositoryLastUpdate.text = getString(R.string.unknown)
-//                    }
-//
-//                } else {
-//                    showError("Not successful: " + response.message())
-//                }
-//            }
-//
-//            override fun onFailure(call: Call<GithubRepo>, t: Throwable) {
-//                hideProgress(false)
-//                showError(t.message)
-//            }
-//        })
-
-        disposable += (api.getRepository(login, repoName)
-                .observeOn(AndroidSchedulers.mainThread())
-                .doOnSubscribe { showProgress() }
-                .doOnError { hideProgress(false) }
-                .doOnComplete { hideProgress(true) }
-                .subscribe({ repo ->
-                    GlideApp.with(this@RepositoryActivity)
-                            .load(repo.owner.avatarUrl)
-                            .into(ivActivityRepositoryProfile)
-
-                    tvActivityRepositoryName.text = repo.fullName
-                    tvActivityRepositoryStars.text = resources.getQuantityString(R.plurals.star, repo.stars, repo.stars)
-                    if (null == repo.description) {
-                        tvActivityRepositoryDescription.setText(R.string.no_description_provided)
-                    } else {
-                        tvActivityRepositoryDescription.text = repo.description
-                    }
-
-
-                    if (null == repo.language) {
-                        tvActivityRepositoryLanguage.setText(R.string.no_language_specified)
-                    } else {
-                        tvActivityRepositoryLanguage.text = repo.language
-                    }
-
-                    try{
-                        val lastUpdate = dateFormatInResponse.parse(repo.updatedAt)
-                        tvActivityRepositoryLastUpdate.text = dateFormatToShow.format(lastUpdate)
-                    }catch(e:ParseException){
-                        tvActivityRepositoryLastUpdate.text = getString(R.string.unknown)
-                    }
-                }){
-                    showError(it.message)
-                }
-
-        )
-
+        disposable += viewModel.requestRepositoryInfo(login, repo)
     }
 
     private fun showProgress() {
@@ -142,8 +124,7 @@ class RepositoryActivity : AppCompatActivity() {
         pbActivityRepository.visibility = View.VISIBLE
     }
 
-    private fun hideProgress(isSucceed: Boolean) {
-        llActivityRepositoryContent.visibility = if (isSucceed) View.VISIBLE else View.GONE
+    private fun hideProgress() {
         pbActivityRepository.visibility = View.GONE
     }
 
@@ -152,5 +133,9 @@ class RepositoryActivity : AppCompatActivity() {
             text = message ?: "Unexpected error."
             visibility = View.VISIBLE
         }
+    }
+
+    private fun setContentVisibility(show: Boolean) {
+        llActivityRepositoryContent.visibility = if (show) View.VISIBLE else View.GONE
     }
 }

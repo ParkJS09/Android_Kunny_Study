@@ -1,5 +1,6 @@
 package com.Android_kotlin_study.simplegithub.ui.search
 
+import android.arch.lifecycle.ViewModelProviders
 import android.os.Bundle
 import android.support.v7.app.AppCompatActivity
 import android.support.v7.widget.LinearLayoutManager
@@ -18,10 +19,8 @@ import com.Android_kotlin_study.simplegithub.extensions.runOnIoScheduler
 import com.Android_kotlin_study.simplegithub.rx.AutoClearedDisposable
 import com.Android_kotlin_study.simplegithub.ui.repo.RepositoryActivity
 import com.jakewharton.rxbinding2.support.v7.widget.queryTextChangeEvents
-import io.reactivex.Completable
 import io.reactivex.Observable
 import io.reactivex.android.schedulers.AndroidSchedulers
-import io.reactivex.schedulers.Schedulers
 import kotlinx.android.synthetic.main.activity_search.*
 import org.jetbrains.anko.startActivity
 import java.lang.IllegalStateException
@@ -37,12 +36,26 @@ class SearchActivity : AppCompatActivity(), SearchAdapter.ItemClickListener {
     internal val disposables = AutoClearedDisposable(this)
     internal val viewDisposables = AutoClearedDisposable(this, false)
     //저장을 하기 위한 Dao의 인스턴스를 받음.
-    internal val searchHistoryDao by lazy { provideSearchHistoryDao(this)}
+    internal val searchHistoryDao by lazy { provideSearchHistoryDao(this) }
+
+    //액티비티가 완전히 종료되기 전까지 이벤트를 계속 받기위해 추가
+    internal val viewDisposable = AutoClearedDisposable(this, false)
+
+    //SearchViewModel을 생성할 때 필요한 뷰모델 팩토리 클래스의 인스턴스를 생성
+    internal val viewModelFactory by lazy {
+        SearchViewModelFactory(
+                provideGithubApi(this),
+                provideSearchHistoryDao(this))
+    }
+
+    //뷰모델의 인스턴스는 onCreate에서 생성하므로 lateinit으로 선언
+    private lateinit var viewModel: SearchViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_search)
 
+        viewModel = ViewModelProviders.of(this, viewModelFactory)[SearchViewModel::class.java]
         lifecycle += disposables
         lifecycle += viewDisposables
 
@@ -50,49 +63,81 @@ class SearchActivity : AppCompatActivity(), SearchAdapter.ItemClickListener {
             layoutManager = LinearLayoutManager(this@SearchActivity)
             adapter = this@SearchActivity.adapter
         }
+
+        //검색 결과 이벤트 구독
+        viewDisposables += viewModel.searchResult
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { items ->
+                    with(adapter) {
+                        if (items.isEmpty) {
+                            //빈 이벤트를 받으면 표시되고있던 항목을 제거
+                            clearItems()
+                        } else {
+                            //유효한 이벤트를 받으면 데이터를 화면에 표시
+                            setItems(items.value)
+                        }
+                        notifyDataSetChanged()
+                    }
+                }
+
+        //메시지 이벤트를 구독
+        viewDisposables += viewModel.message
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { message ->
+                    if (message.isEmpty) {
+                        //빈 이벤트를 받으면 화면에 표시되고 있떤 메시지를 숨김
+                        hideError()
+                    } else {
+                        //유효한 이벤트를 받으면 화면에 메시지를 표시
+                        showError(message.value)
+                    }
+                }
+
+        //작업 진행 여부 이벤트를 구독
+        viewDisposables += viewModel.isLoading
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { isLoading ->
+                    if (isLoading) {
+                        showProgress()
+                    } else {
+                        hideProgress()
+                    }
+                }
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.menu_activity_search, menu)
         menuSearch = menu.findItem(R.id.menu_activity_search_query)
-//        searchView = (menuSearch.actionView as SearchView).apply {
-//            setOnQueryTextListener(object : SearchView.OnQueryTextListener {
-//                override fun onQueryTextSubmit(query: String): Boolean {
-//                    updateTitle(query)
-//                    hideSoftKeyboard()
-//                    collapseSearchView()
-//                    searchRepository(query)
-//                    return true
-//                }
-//
-//                override fun onQueryTextChange(newText: String): Boolean {
-//                    return false
-//                }
-//            })
-//        }
         searchView = (menuSearch.actionView as SearchView)
-        viewDisposables += searchView.queryTextChangeEvents()
 
+        viewDisposables += searchView.queryTextChangeEvents()
                 //검색을 수행했을 때 발생한 이벤트 처리
                 .filter { it.isSubmitted }
                 //이벤트에서 검색어 텍스트(CharSequence)추출
-                .map{it.queryText()}
+                .map { it.queryText() }
                 //빈 무자열이 아닌 검색어 처리
-                .filter{it.isNotEmpty()}
+                .filter { it.isNotEmpty() }
                 //검색어를 String 형태로 변환
-                .map{it.toString()}
+                .map { it.toString() }
                 //Android의 mainThread()를 사용하여 메인스레드에서 실행 처리
                 .observeOn(AndroidSchedulers.mainThread())
                 //업서버블을 구독
-                .subscribe{query->
+                .subscribe { query ->
                     updateTitle(query)
                     hideSoftKeyboard()
                     collapseSearchView()
                     searchRepository(query)
                 }
 
-        menuSearch.expandActionView()
-
+        viewDisposables += viewModel.lastSearchKeyword
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { keyword ->
+                    if (keyword.isEmpty) {
+                        menuSearch.expandActionView()
+                    } else {
+                        updateTitle(keyword.value)
+                    }
+                }
         return true
     }
 
@@ -104,89 +149,16 @@ class SearchActivity : AppCompatActivity(), SearchAdapter.ItemClickListener {
         return super.onOptionsItemSelected(item)
     }
 
-//    override fun onStop() {
-//        super.onStop()
-        //관리하고 있는 디스포저블 객체를 모두 해제
-//        searchCall?.run { cancel() }
-//        disposable.clear()
-//        if(isFinishing){
-//            viewDisposables.clear()
-//        }
-    //}
-
     override fun onItemClick(repository: GithubRepo) {
-//        disposables += Completable.fromCallable{searchHistoryDao.add(repository)}.subscribeOn(Schedulers.io()).subscribe()
-        disposables += runOnIoScheduler { searchHistoryDao.add(repository) }
+        disposables += viewModel.addToSearchHisory(repository)
         startActivity<RepositoryActivity>(
                 RepositoryActivity.KEY_USER_LOGIN to repository.owner.login,
-                RepositoryActivity.KEY_REPO_NAME to repository.name)
+                RepositoryActivity.KEY_REPO_NAME to repository.name
+        )
     }
 
     private fun searchRepository(query: String) {
-        //clearResults()
-//        hideError()
-//        showProgress()
-
-//        searchCall = api.searchRepository(query)
-//        searchCall!!.enqueue(object : Callback<RepoSearchResponse> {
-//            override fun onResponse(call: Call<RepoSearchResponse>,
-//                    response: Response<RepoSearchResponse>) {
-//                hideProgress()
-//
-//                val searchResult = response.body()
-//                if (response.isSuccessful && null != searchResult) {
-//                    with(adapter) {
-//                        setItems(searchResult.items)
-//                        notifyDataSetChanged()
-//                    }
-//
-//                    if (0 == searchResult.totalCount) {
-//                        showError(getString(R.string.no_search_result))
-//                    }
-//                } else {
-//                    showError("Not successful: " + response.message())
-//                }
-//            }
-//
-//            override fun onFailure(call: Call<RepoSearchResponse>, t: Throwable) {
-//                hideProgress()
-//                showError(t.message)
-//            }
-//        })
-
-        disposables += api.searchRepository(query)
-                //Observable 형태로 결과를 바꿔주기 위해 flatMap을 사용
-                .flatMap {
-                    if (0 == it.totalCount) {
-                        //검색 결과가 없을 경우 에러를 발생시켜 에러 메시지를 표시
-                        Observable.error(IllegalStateException("No search Result"))
-                    } else {
-                        Observable.just(it.items)
-                    }
-                }
-                //스케줄러 지정
-                .observeOn(AndroidSchedulers.mainThread())
-                //구독할 때 수행할 작업
-                .doOnSubscribe {
-                    clearResults()
-                    hideError()
-                    showProgress()
-                }
-                //스트림이 종료될 때 수행할 작업
-                .doOnTerminate {
-                    hideProgress()
-                }
-                //옵서버블을 구독
-                .subscribe({ items ->
-                    with(adapter) {
-                        setItems(items)
-                        notifyDataSetChanged()
-                    }
-                }) {
-                    //에러블록
-                    showError(it.message)
-                }
-
+        disposables += viewModel.searchRepository(query)
     }
 
     private fun updateTitle(query: String) {
